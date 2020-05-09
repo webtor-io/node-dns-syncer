@@ -136,8 +136,9 @@ func getNodesIPs() []string {
 	if err != nil {
 		log.Fatal(err)
 	}
-	opts := metav1.ListOptions{
-		LabelSelector: viper.GetString("k8s-label-selector"),
+	opts := metav1.ListOptions{}
+	if viper.GetString("k8s-label-selector") != "" {
+		opts.LabelSelector = viper.GetString("k8s-label-selector")
 	}
 
 	nodes, err := cl.CoreV1().Nodes().List(opts)
