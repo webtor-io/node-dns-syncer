@@ -1,6 +1,6 @@
 module github.com/webtor-io/node-dns-syncer
 
-go 1.14
+go 1.15
 
 require (
 	github.com/cloudflare/cloudflare-go v0.11.0
