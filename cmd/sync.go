@@ -147,8 +147,11 @@ func getNodesIPs() []string {
 	}
 	res := []string{}
 	for _, n := range nodes.Items {
+		log.Infof("%+v", n)
 		for _, a := range n.Status.Addresses {
 			if a.Type == corev1.NodeExternalIP {
+				res = append(res, a.Address)
+			} else if a.Type == corev1.NodeInternalIP {
 				res = append(res, a.Address)
 			}
 		}
