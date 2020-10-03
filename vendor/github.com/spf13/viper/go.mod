@@ -1,7 +1,5 @@
 module github.com/spf13/viper
 
-go 1.14
-
 require (
 	github.com/armon/consul-api v0.0.0-20180202201655-eb2c6b5be1b6 // indirect
 	github.com/coreos/etcd v3.3.10+incompatible // indirect
