@@ -148,7 +148,7 @@ func getNodesIPs() []string {
 	res := []string{}
 	for _, n := range nodes.Items {
 		for _, a := range n.Status.Addresses {
-			if a.Type == corev1.NodeExternalIP {
+			if a.Type == corev1.NodeAddressType(viper.GetString("k8s-address-type")) {
 				res = append(res, a.Address)
 			}
 		}
@@ -165,6 +165,7 @@ func init() {
 	syncCmd.Flags().String("cf-api-key", "", "Cloudflare API Key")
 	syncCmd.Flags().String("cf-api-email", "", "Cloudflare API Email")
 	syncCmd.Flags().String("k8s-label-selector", "", "Kubernetes node label selector")
+	syncCmd.Flags().String("k8s-address-type", "ExternalIP", "Kubernetes node address type")
 	syncCmd.Flags().StringSlice("cf-zones", []string{}, "Cloudflare zones")
 
 	cobra.MarkFlagRequired(syncCmd.Flags(), "cf-api-key")
