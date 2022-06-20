@@ -77,14 +77,15 @@ func updateNodeLabel(ctx context.Context, cl *kubernetes.Clientset, n Node) {
 	}
 }
 
-func makeSubdomainName(prefix string, ip string, suffix string) string {
+func makeSubdomainName(prefix string, ip string) string {
 	byteIP := net.ParseIP(ip)
 	hexIP := fmt.Sprintf("%02x%02x%02x%02x", byteIP[12], byteIP[13], byteIP[14], byteIP[15])
-	return prefix + hexIP + suffix
+	return prefix + hexIP
 }
 
 func sync(ctx context.Context, cl *kubernetes.Clientset, api *cloudflare.API, zoneName, zoneID string, recs []cloudflare.DNSRecord, nodes []Node) {
 	prefix := viper.GetString("domain-name-prefix")
+	suffix := viper.GetString("domain-name-suffix")
 	dryRun := viper.GetBool("dry-run")
 	deleted := []string{}
 	for _, r := range recs {
@@ -110,7 +111,7 @@ func sync(ctx context.Context, cl *kubernetes.Clientset, api *cloudflare.API, zo
 	}
 	for _, n := range nodes {
 
-		name := n.Subdomain + "." + zoneName
+		name := n.Subdomain + suffix + zoneName
 
 		found := false
 		for _, r := range recs {
@@ -179,7 +180,6 @@ type Node struct {
 
 func getNodes(ctx context.Context, cl *kubernetes.Clientset) []Node {
 	prefix := viper.GetString("domain-name-prefix")
-	suffix := viper.GetString("domain-name-suffix")
 	opts := metav1.ListOptions{}
 	if viper.GetString("k8s-label-selector") != "" {
 		opts.LabelSelector = viper.GetString("k8s-label-selector")
@@ -196,7 +196,7 @@ func getNodes(ctx context.Context, cl *kubernetes.Clientset) []Node {
 				res = append(res, Node{
 					Name:      n.Name,
 					IP:        a.Address,
-					Subdomain: makeSubdomainName(prefix, a.Address, suffix),
+					Subdomain: makeSubdomainName(prefix, a.Address),
 				})
 			}
 		}
