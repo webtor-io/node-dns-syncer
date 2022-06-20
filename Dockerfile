@@ -18,7 +18,7 @@ ENV CGO_ENABLED=0
 ENV GOOS=linux
 
 # build the binary with debug information removed
-RUN go build -mod=vendor -ldflags '-w -s' -a -installsuffix cgo -o node-dns-syncer
+RUN go build -ldflags '-w -s' -a -installsuffix cgo -o node-dns-syncer
 
 FROM scratch
 
