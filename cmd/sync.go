@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -27,8 +28,10 @@ var syncCmd = &cobra.Command{
 	Use:   "sync",
 	Short: "Syncs Cloudflare DNS-records with Kubernetes nodes",
 	Run: func(cmd *cobra.Command, args []string) {
-		ips := getNodesIPs()
-		log.Infof("Got nodes ips=%v", ips)
+		ctx := context.Background()
+		cl := getClient()
+		nodes := getNodes(ctx, cl)
+		log.Infof("Got nodes ips=%v", nodes)
 		api, err := cloudflare.New(viper.GetString("cf-api-key"), viper.GetString("cf-api-email"))
 		if err != nil {
 			log.Fatal(err)
@@ -40,18 +43,48 @@ var syncCmd = &cobra.Command{
 			if err != nil {
 				log.Fatal(err)
 			}
-			recs, err := api.DNSRecords(id, cloudflare.DNSRecord{})
+			recs, err := api.DNSRecords(ctx, id, cloudflare.DNSRecord{})
 			if err != nil {
 				log.Fatal(err)
 			}
-			sync(api, n, id, recs, ips)
+			sync(ctx, cl, api, n, id, recs, nodes)
 		}
 	},
 }
 
-func sync(api *cloudflare.API, zoneName, zoneID string, recs []cloudflare.DNSRecord, ips []string) {
+var updatedNodes = map[string]bool{}
+
+func updateNodeLabel(ctx context.Context, cl *kubernetes.Clientset, n Node) {
+	labelName := viper.GetString("k8s-label-name")
+	if labelName == "" {
+		return
+	}
+	if _, ok := updatedNodes[n.Name]; ok {
+		return
+	}
+	kn, err := cl.CoreV1().Nodes().Get(ctx, n.Name, metav1.GetOptions{})
+	if err != nil {
+		log.Fatal(err)
+	}
+	if _, ok := kn.ObjectMeta.Labels[labelName]; !ok {
+		log.Infof("Set label \"%s\" with value \"%s\" for node \"%s\"", labelName, n.Subdomain, n.Name)
+		kn.ObjectMeta.Labels[labelName] = n.Subdomain
+		_, err := cl.CoreV1().Nodes().Update(ctx, kn, metav1.UpdateOptions{})
+		if err != nil {
+			log.Fatal(err)
+		}
+		updatedNodes[n.Name] = true
+	}
+}
+
+func makeSubdomainName(prefix string, ip string, suffix string) string {
+	byteIP := net.ParseIP(ip)
+	hexIP := fmt.Sprintf("%02x%02x%02x%02x", byteIP[12], byteIP[13], byteIP[14], byteIP[15])
+	return prefix + hexIP + suffix
+}
+
+func sync(ctx context.Context, cl *kubernetes.Clientset, api *cloudflare.API, zoneName, zoneID string, recs []cloudflare.DNSRecord, nodes []Node) {
 	prefix := viper.GetString("domain-name-prefix")
-	suffix := viper.GetString("domain-name-suffix")
 	dryRun := viper.GetBool("dry-run")
 	deleted := []string{}
 	for _, r := range recs {
@@ -59,8 +92,8 @@ func sync(api *cloudflare.API, zoneName, zoneID string, recs []cloudflare.DNSRec
 			continue
 		}
 		found := false
-		for _, ip := range ips {
-			if r.Content == ip {
+		for _, n := range nodes {
+			if r.Content == n.IP {
 				found = true
 			}
 		}
@@ -68,17 +101,16 @@ func sync(api *cloudflare.API, zoneName, zoneID string, recs []cloudflare.DNSRec
 			log.Infof("Remove record \"%s\"", r.Name)
 			deleted = append(deleted, r.Name)
 			if !dryRun {
-				err := api.DeleteDNSRecord(zoneID, r.ID)
+				err := api.DeleteDNSRecord(ctx, zoneID, r.ID)
 				if err != nil {
 					log.Fatal(err)
 				}
 			}
 		}
 	}
-	for _, ip := range ips {
-		byteIP := net.ParseIP(ip)
-		hexIP := fmt.Sprintf("%02x%02x%02x%02x", byteIP[12], byteIP[13], byteIP[14], byteIP[15])
-		name := prefix + hexIP + suffix + zoneName
+	for _, n := range nodes {
+
+		name := n.Subdomain + "." + zoneName
 
 		found := false
 		for _, r := range recs {
@@ -93,29 +125,29 @@ func sync(api *cloudflare.API, zoneName, zoneID string, recs []cloudflare.DNSRec
 			}
 			if r.Name == name {
 				found = true
-				log.Infof("Record \"%s\" with ip %s already exists", name, ip)
+				log.Infof("Record \"%s\" with ip %s already exists", name, n.IP)
+				updateNodeLabel(ctx, cl, n)
 			}
 		}
 		if !found {
-			log.Infof("Add record \"%s\" with ip %s", name, ip)
+			log.Infof("Add record \"%s\" with ip %s", name, n.IP)
 			if !dryRun {
-				_, err := api.CreateDNSRecord(zoneID, cloudflare.DNSRecord{
+				_, err := api.CreateDNSRecord(ctx, zoneID, cloudflare.DNSRecord{
 					Type:    "A",
 					Name:    name,
-					Content: ip,
-					Proxied: false,
+					Content: n.IP,
+					Proxied: cloudflare.BoolPtr(false),
 				})
 				if err != nil {
 					log.Fatal(err)
 				}
+				updateNodeLabel(ctx, cl, n)
 			}
-
 		}
 	}
-
 }
 
-func getNodesIPs() []string {
+func getClient() *kubernetes.Clientset {
 	kubeconfig := filepath.Join(os.Getenv("HOME"), ".kube", "config")
 	log.Infof("Checking local kubekinfig path=%s", kubeconfig)
 	var config *rest.Config
@@ -136,20 +168,36 @@ func getNodesIPs() []string {
 	if err != nil {
 		log.Fatal(err)
 	}
+	return cl
+}
+
+type Node struct {
+	Name      string
+	IP        string
+	Subdomain string
+}
+
+func getNodes(ctx context.Context, cl *kubernetes.Clientset) []Node {
+	prefix := viper.GetString("domain-name-prefix")
+	suffix := viper.GetString("domain-name-suffix")
 	opts := metav1.ListOptions{}
 	if viper.GetString("k8s-label-selector") != "" {
 		opts.LabelSelector = viper.GetString("k8s-label-selector")
 	}
 
-	nodes, err := cl.CoreV1().Nodes().List(opts)
+	nodes, err := cl.CoreV1().Nodes().List(ctx, opts)
 	if err != nil {
 		log.Fatal(err)
 	}
-	res := []string{}
+	res := []Node{}
 	for _, n := range nodes.Items {
 		for _, a := range n.Status.Addresses {
 			if a.Type == corev1.NodeAddressType(viper.GetString("k8s-address-type")) {
-				res = append(res, a.Address)
+				res = append(res, Node{
+					Name:      n.Name,
+					IP:        a.Address,
+					Subdomain: makeSubdomainName(prefix, a.Address, suffix),
+				})
 			}
 		}
 	}
@@ -165,6 +213,7 @@ func init() {
 	syncCmd.Flags().String("cf-api-key", "", "Cloudflare API Key")
 	syncCmd.Flags().String("cf-api-email", "", "Cloudflare API Email")
 	syncCmd.Flags().String("k8s-label-selector", "", "Kubernetes node label selector")
+	syncCmd.Flags().String("k8s-label-name", "", "Kubernetes node label name")
 	syncCmd.Flags().String("k8s-address-type", "ExternalIP", "Kubernetes node address type")
 	syncCmd.Flags().StringSlice("cf-zones", []string{}, "Cloudflare zones")
 
