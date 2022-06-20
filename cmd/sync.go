@@ -66,7 +66,7 @@ func updateNodeLabel(ctx context.Context, cl *kubernetes.Clientset, n Node) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if _, ok := kn.ObjectMeta.Labels[labelName]; !ok {
+	if v, ok := kn.ObjectMeta.Labels[labelName]; !ok || v != n.Subdomain {
 		log.Infof("Set label \"%s\" with value \"%s\" for node \"%s\"", labelName, n.Subdomain, n.Name)
 		kn.ObjectMeta.Labels[labelName] = n.Subdomain
 		_, err := cl.CoreV1().Nodes().Update(ctx, kn, metav1.UpdateOptions{})
