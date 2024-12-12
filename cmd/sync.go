@@ -39,15 +39,15 @@ var syncCmd = &cobra.Command{
 
 		for _, n := range viper.GetStringSlice("cf-zones") {
 			log.Infof("Processing zone %s", n)
-			id, err := api.ZoneIDByName(n)
+			zoneID, err := api.ZoneIDByName(n)
 			if err != nil {
 				log.Fatal(err)
 			}
-			recs, err := api.DNSRecords(ctx, id, cloudflare.DNSRecord{})
+			recs, _, err := api.ListDNSRecords(ctx, cloudflare.ZoneIdentifier(zoneID), cloudflare.ListDNSRecordsParams{})
 			if err != nil {
 				log.Fatal(err)
 			}
-			sync(ctx, cl, api, n, id, recs, nodes)
+			sync(ctx, cl, api, n, zoneID, recs, nodes)
 		}
 	},
 }
@@ -85,9 +85,9 @@ func makeSubdomainName(prefix string, ip string) string {
 
 func sync(ctx context.Context, cl *kubernetes.Clientset, api *cloudflare.API, zoneName, zoneID string, recs []cloudflare.DNSRecord, nodes []Node) {
 	prefix := viper.GetString("domain-name-prefix")
-	suffix := viper.GetString("domain-name-suffix")
 	dryRun := viper.GetBool("dry-run")
-	deleted := []string{}
+	suffixes := strings.Split(viper.GetString("domain-name-suffix"), ",")
+	var deleted []string
 	for _, r := range recs {
 		if !strings.HasPrefix(r.Name, prefix) {
 			continue
@@ -102,7 +102,7 @@ func sync(ctx context.Context, cl *kubernetes.Clientset, api *cloudflare.API, zo
 			log.Infof("Remove record \"%s\"", r.Name)
 			deleted = append(deleted, r.Name)
 			if !dryRun {
-				err := api.DeleteDNSRecord(ctx, zoneID, r.ID)
+				err := api.DeleteDNSRecord(ctx, cloudflare.ZoneIdentifier(zoneID), r.ID)
 				if err != nil {
 					log.Fatal(err)
 				}
@@ -110,41 +110,45 @@ func sync(ctx context.Context, cl *kubernetes.Clientset, api *cloudflare.API, zo
 		}
 	}
 	for _, n := range nodes {
+		for _, suffix := range suffixes {
+			suffix = strings.TrimSpace(suffix)
 
-		name := n.Subdomain + suffix + zoneName
+			name := n.Subdomain + suffix + zoneName
 
-		found := false
-		for _, r := range recs {
-			del := false
-			for _, d := range deleted {
-				if d == r.Name {
-					del = true
+			found := false
+			for _, r := range recs {
+				del := false
+				for _, d := range deleted {
+					if d == r.Name {
+						del = true
+					}
+				}
+				if del {
+					continue
+				}
+				if r.Name == name {
+					found = true
+					log.Infof("Record \"%s\" with ip %s already exists", name, n.IP)
+					updateNodeLabel(ctx, cl, n)
 				}
 			}
-			if del {
-				continue
-			}
-			if r.Name == name {
-				found = true
-				log.Infof("Record \"%s\" with ip %s already exists", name, n.IP)
-				updateNodeLabel(ctx, cl, n)
-			}
-		}
-		if !found {
-			log.Infof("Add record \"%s\" with ip %s", name, n.IP)
-			if !dryRun {
-				_, err := api.CreateDNSRecord(ctx, zoneID, cloudflare.DNSRecord{
-					Type:    "A",
-					Name:    name,
-					Content: n.IP,
-					Proxied: cloudflare.BoolPtr(false),
-				})
-				if err != nil {
-					log.Fatal(err)
+			if !found {
+				log.Infof("Add record \"%s\" with ip %s", name, n.IP)
+				if !dryRun {
+					_, err := api.CreateDNSRecord(ctx, cloudflare.ZoneIdentifier(zoneID), cloudflare.CreateDNSRecordParams{
+						Type:    "A",
+						Name:    name,
+						Content: n.IP,
+						Proxied: cloudflare.BoolPtr(false),
+					})
+					if err != nil {
+						log.Fatal(err)
+					}
+					updateNodeLabel(ctx, cl, n)
 				}
-				updateNodeLabel(ctx, cl, n)
 			}
 		}
+
 	}
 }
 
